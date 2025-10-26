@@ -1,18 +1,22 @@
 """
 Vercel Serverless Function Handler
-Uses Mangum to adapt Flask app for serverless
 """
-import os
 import sys
+import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path for imports
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-# Import Flask app
+# Import the Flask app
 from app import app
 
-# Use Mangum to wrap Flask app for serverless
+# Wrap with Mangum for ASGI/Serverless compatibility
 from mangum import Mangum
 
-# Create ASGI handler
-handler = Mangum(app)
+# Create handler for Vercel
+handler = Mangum(app, lifespan="off")
+
+# Export for Vercel
+__all__ = ['handler']
