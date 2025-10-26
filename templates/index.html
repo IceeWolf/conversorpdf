@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Converter - Conversão para Excel</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 PDF Converter</h1>
+            <p>Converte PDF para Excel com extração inteligente de tabelas</p>
+        </header>
+
+        <main>
+            <!-- Upload Section -->
+            <div class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <div class="upload-icon">📁</div>
+                        <h3>Arraste e solte seu arquivo PDF aqui</h3>
+                        <p>ou clique para selecionar</p>
+                        <input type="file" id="fileInput" accept=".pdf" hidden>
+                        <button class="select-btn" onclick="document.getElementById('fileInput').click()">
+                            Selecionar Arquivo
+                        </button>
+                    </div>
+                </div>
+
+                <div class="file-info" id="fileInfo" style="display: none;">
+                    <div class="file-details">
+                        <span class="file-name" id="fileName"></span>
+                        <span class="file-size" id="fileSize"></span>
+                        <button class="remove-btn" onclick="removeFile()">✕</button>
+                    </div>
+                    <button class="action-btn" onclick="convertPDF()">
+                        📊 Converter para Excel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Progress Section -->
+            <div class="progress-section" id="progressSection" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p class="progress-text" id="progressText">Processando arquivo...</p>
+            </div>
+
+            <!-- Results Section -->
+            <div class="results-section" id="resultsSection" style="display: none;">
+                <div class="success-message">
+                    <h3>✅ Processamento concluído!</h3>
+                    <p id="resultMessage"></p>
+                    <div class="download-buttons" id="downloadButtons">
+                        <!-- Download buttons will be added dynamically -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error Section -->
+            <div class="error-section" id="errorSection" style="display: none;">
+                <div class="error-message">
+                    <h3>❌ Erro no processamento</h3>
+                    <p id="errorMessage"></p>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <div class="features">
+                <h4>✨ Funcionalidades do PDF Converter</h4>
+                <ul>
+                    <li>📊 Conversão inteligente de PDF para Excel</li>
+                    <li>🔍 Extração automática de tabelas</li>
+                    <li>📄 Suporte a múltiplas páginas</li>
+                    <li>📋 Formatação automática de células</li>
+                    <li>💾 Download direto do arquivo Excel</li>
+                    <li>🎨 Interface simples e intuitiva</li>
+                </ul>
+            </div>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
