@@ -195,91 +195,159 @@ class PDFConverter:
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 for page_num, page in enumerate(pdf.pages):
-                    # Try multiple extraction strategies
-                    # Strategy 1: Extract structured tables with explicit boundaries
-                    page_tables = page.extract_tables(table_settings={
-                        "vertical_strategy": "lines",
-                        "horizontal_strategy": "lines",
-                        "explicit_vertical_lines": [],
-                        "explicit_horizontal_lines": [],
-                        "snap_tolerance": 3,
-                        "join_tolerance": 3,
-                        "edge_tolerance": 3,
-                        "text_tolerance": 3,
-                        "text_x_tolerance": 3,
-                        "text_y_tolerance": 3,
-                        "intersection_tolerance": 3,
-                        "intersection_x_tolerance": 3,
-                        "intersection_y_tolerance": 3,
-                    })
+                    print(f"\n=== Processing Page {page_num + 1} ===")
                     
-                    # If no tables found with explicit settings, try default
-                    if not page_tables:
-                        page_tables = page.extract_tables()
+                    # Strategy 1: Try with default settings first (most reliable)
+                    page_tables = page.extract_tables()
+                    print(f"Default extraction: Found {len(page_tables) if page_tables else 0} tables")
                     
-                    # If still no tables, try with minimal settings
-                    if not page_tables:
-                        page_tables = page.extract_tables(table_settings={
+                    # Strategy 2: If default finds tables but they seem incomplete, try with lines strategy
+                    if page_tables:
+                        total_rows = sum(len(t) for t in page_tables if t)
+                        print(f"Total rows found: {total_rows}")
+                        
+                        # If very few rows, try alternative strategies
+                        if total_rows < 5:
+                            print("Few rows detected, trying alternative extraction...")
+                            # Try with explicit line detection
+                            alt_tables = page.extract_tables(table_settings={
+                                "vertical_strategy": "lines_strict",
+                                "horizontal_strategy": "lines_strict",
+                                "snap_tolerance": 5,
+                                "join_tolerance": 5,
+                            })
+                            if alt_tables:
+                                alt_total_rows = sum(len(t) for t in alt_tables if t)
+                                print(f"Alternative extraction found {alt_total_rows} rows")
+                                if alt_total_rows > total_rows:
+                                    page_tables = alt_tables
+                                    print("Using alternative extraction (more rows)")
+                    
+                    # Strategy 3: If still no tables or very few, try text-based
+                    if not page_tables or (page_tables and sum(len(t) for t in page_tables if t) < 3):
+                        print("Trying text-based extraction...")
+                        text_tables = page.extract_tables(table_settings={
                             "vertical_strategy": "text",
                             "horizontal_strategy": "text",
                         })
+                        if text_tables:
+                            text_total_rows = sum(len(t) for t in text_tables if t)
+                            print(f"Text-based extraction found {text_total_rows} rows")
+                            if not page_tables or text_total_rows > sum(len(t) for t in page_tables if t):
+                                page_tables = text_tables
+                                print("Using text-based extraction")
                     
                     structured_tables_found = False
                     
                     if page_tables:
-                        print(f"Page {page_num + 1}: Found {len(page_tables)} structured tables")
-                        for table_num, table in enumerate(page_tables):
-                            if table and len(table) > 0:  # Table exists and has rows
-                                # Clean the table data
-                                cleaned_table = []
-                                max_cols = 0
+                        print(f"Processing {len(page_tables)} table(s)...")
+                        
+                        # If multiple small tables, try to merge them (might be one table split)
+                        if len(page_tables) > 1:
+                            total_rows_all = sum(len(t) for t in page_tables if t)
+                            print(f"Multiple tables detected ({len(page_tables)}), total rows: {total_rows_all}")
+                            
+                            # Check if tables have similar column structure (likely parts of same table)
+                            if total_rows_all > 0:
+                                first_table_cols = len(page_tables[0][0]) if page_tables[0] and page_tables[0][0] else 0
+                                similar_cols = all(
+                                    len(t[0]) == first_table_cols 
+                                    for t in page_tables 
+                                    if t and t[0] and len(t[0]) > 0
+                                ) if first_table_cols > 0 else False
                                 
-                                for row in table:
-                                    if row:  # Row exists
-                                        # Clean and check for content
-                                        cleaned_row = []
-                                        for cell in row:
-                                            if cell:
-                                                cleaned_cell = str(cell).strip()
-                                                cleaned_row.append(cleaned_cell)
-                                            else:
-                                                cleaned_row.append('')
+                                if similar_cols and first_table_cols >= 5:  # Likely same table split
+                                    print("Tables appear to have same structure, merging...")
+                                    merged_table = []
+                                    max_cols = 0
+                                    
+                                    for table in page_tables:
+                                        if table:
+                                            for row in table:
+                                                if row:
+                                                    cleaned_row = [str(cell).strip() if cell else '' for cell in row]
+                                                    # ALWAYS add row - don't filter!
+                                                    merged_table.append(cleaned_row)
+                                                    max_cols = max(max_cols, len(cleaned_row))
+                                    
+                                    if merged_table:
+                                        # Normalize columns
+                                        for i, row in enumerate(merged_table):
+                                            while len(row) < max_cols:
+                                                row.append('')
+                                            merged_table[i] = row
                                         
-                                        # Check if row has any non-empty content
-                                        if any(cell for cell in cleaned_row):
+                                        print(f"Merged table: {len(merged_table)} rows, {max_cols} columns")
+                                        structured_tables_found = True
+                                        tables.append({
+                                            'page': page_num + 1,
+                                            'table': 1,
+                                            'data': merged_table
+                                        })
+                        
+                        # If not merged, process tables individually
+                        if not structured_tables_found:
+                            for table_num, table in enumerate(page_tables):
+                                if table and len(table) > 0:
+                                    # Clean the table data
+                                    cleaned_table = []
+                                    max_cols = 0
+                                    
+                                    for row_idx, row in enumerate(table):
+                                        if row:  # Row exists
+                                            # Clean all cells
+                                            cleaned_row = []
+                                            for cell in row:
+                                                if cell:
+                                                    cleaned_cell = str(cell).strip()
+                                                    cleaned_row.append(cleaned_cell)
+                                                else:
+                                                    cleaned_row.append('')
+                                            
+                                            # ALWAYS add row - don't filter!
                                             cleaned_table.append(cleaned_row)
                                             max_cols = max(max_cols, len(cleaned_row))
-                                
-                                # Normalize all rows to have the same number of columns
-                                if cleaned_table:
-                                    for i, row in enumerate(cleaned_table):
-                                        while len(row) < max_cols:
-                                            row.append('')
-                                        cleaned_table[i] = row
-                                
-                                # Add table if it has at least one row
-                                if len(cleaned_table) > 0:
-                                    structured_tables_found = True
-                                    print(f"  Table {table_num + 1}: {len(cleaned_table)} rows, {max_cols} columns")
-                                    tables.append({
-                                        'page': page_num + 1,
-                                        'table': table_num + 1,
-                                        'data': cleaned_table
-                                    })
+                                    
+                                    # Normalize all rows to have the same number of columns
+                                    if cleaned_table:
+                                        for i, row in enumerate(cleaned_table):
+                                            while len(row) < max_cols:
+                                                row.append('')
+                                            cleaned_table[i] = row
+                                        
+                                        structured_tables_found = True
+                                        print(f"  Table {table_num + 1}: {len(cleaned_table)} rows, {max_cols} columns")
+                                        if len(cleaned_table) > 0:
+                                            print(f"    First row: {cleaned_table[0][:5]}...")  # Show first 5 columns
+                                            if len(cleaned_table) > 1:
+                                                print(f"    Last row: {cleaned_table[-1][:5]}...")
+                                        
+                                        tables.append({
+                                            'page': page_num + 1,
+                                            'table': table_num + 1,
+                                            'data': cleaned_table
+                                        })
                     
-                    # If no structured tables found, try text extraction as fallback
-                    if not structured_tables_found:
+                    # If no structured tables found or too few rows, try text extraction as fallback
+                    if not structured_tables_found or (structured_tables_found and len(tables) > 0 and len(tables[-1]['data']) < 3):
+                        print("Trying full text extraction as fallback...")
                         text = page.extract_text()
                         if text:
-                            print(f"Page {page_num + 1}: No structured tables, trying text extraction")
+                            print(f"Extracted text length: {len(text)} characters")
                             parsed_data = self.parse_text_to_table(text)
                             if parsed_data and len(parsed_data) > 1:
-                                print(f"  Text extraction: {len(parsed_data)} rows")
-                                tables.append({
-                                    'page': page_num + 1,
-                                    'table': 1,
-                                    'data': parsed_data
-                                })
+                                print(f"Text parsing found {len(parsed_data)} rows")
+                                # Only add if we don't have tables or if text parsing found more rows
+                                if not structured_tables_found or (parsed_data and len(parsed_data) > len(tables[-1]['data']) if tables else False):
+                                    print("Using text-parsed data")
+                                    tables.append({
+                                        'page': page_num + 1,
+                                        'table': len(page_tables) + 1 if page_tables else 1,
+                                        'data': parsed_data
+                                    })
+                    
+                    print(f"Page {page_num + 1} complete: {len([t for t in tables if t['page'] == page_num + 1])} table(s) added")
+                    
         except Exception as e:
             print(f"Error with pdfplumber: {e}")
             import traceback
