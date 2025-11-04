@@ -105,24 +105,45 @@ class PDFConverter:
                             date,
                             "", "", "", "", ""
                         ])
+            else:
+                # If line doesn't match pattern, try to extract as generic data
+                # Split by multiple spaces or tabs
+                parts = re.split(r'\s{2,}|\t', line)
+                if len(parts) >= 3:  # At least 3 columns
+                    cleaned_parts = [p.strip() for p in parts if p.strip()]
+                    if len(cleaned_parts) >= 3:
+                        table_data.append(cleaned_parts)
             
             i += 1
         
-        # If we found data, add headers
+        # If we found data with specific pattern, add headers
         if table_data:
-            headers = [
-                "ID",
-                "Descrição",
-                "Unidade",
-                "Valor",
-                "Data",
-                "Empresa",
-                "Unidade Empresa",
-                "Valor 1",
-                "Valor 2",
-                "Percentagens"
-            ]
-            return [headers] + table_data
+            # Check if we used the specific pattern (10 columns) or generic
+            if len(table_data) > 0 and len(table_data[0]) == 10:
+                headers = [
+                    "ID",
+                    "Descrição",
+                    "Unidade",
+                    "Valor",
+                    "Data",
+                    "Empresa",
+                    "Unidade Empresa",
+                    "Valor 1",
+                    "Valor 2",
+                    "Percentagens"
+                ]
+                return [headers] + table_data
+            else:
+                # Generic data - use generic headers
+                max_cols = max(len(row) for row in table_data) if table_data else 0
+                if max_cols > 0:
+                    headers = [f"Coluna {i+1}" for i in range(max_cols)]
+                    # Pad rows
+                    padded_data = []
+                    for row in table_data:
+                        padded_row = row + [""] * (max_cols - len(row))
+                        padded_data.append(padded_row)
+                    return [headers] + padded_data
         
         # If no structured data found, try a more generic approach
         return self.parse_generic_text_to_table(text)
@@ -141,24 +162,30 @@ class PDFConverter:
             # Split by multiple spaces to find data columns
             parts = re.split(r'\s{2,}', line)  # Split by 2 or more spaces
             
-            if len(parts) >= 3:  # At least 3 columns of data
+            if len(parts) >= 2:  # At least 2 columns of data (reduced from 3)
                 # Clean up each part
                 cleaned_parts = [part.strip() for part in parts if part.strip()]
-                if len(cleaned_parts) >= 3:
+                if len(cleaned_parts) >= 2:  # At least 2 columns
                     table_data.append(cleaned_parts)
+            else:
+                # Try splitting by single spaces if multiple spaces didn't work
+                parts = line.split()
+                if len(parts) >= 3:  # At least 3 words/columns
+                    table_data.append(parts)
         
         # If we found data, create headers
         if table_data:
-            max_cols = max(len(row) for row in table_data)
-            headers = [f"Coluna {i+1}" for i in range(max_cols)]
-            
-            # Pad rows to have same number of columns
-            padded_data = []
-            for row in table_data:
-                padded_row = row + [""] * (max_cols - len(row))
-                padded_data.append(padded_row)
-            
-            return [headers] + padded_data
+            max_cols = max(len(row) for row in table_data) if table_data else 0
+            if max_cols > 0:
+                headers = [f"Coluna {i+1}" for i in range(max_cols)]
+                
+                # Pad rows to have same number of columns
+                padded_data = []
+                for row in table_data:
+                    padded_row = row + [""] * (max_cols - len(row))
+                    padded_data.append(padded_row)
+                
+                return [headers] + padded_data
         
         return None
     
@@ -170,29 +197,47 @@ class PDFConverter:
                 for page_num, page in enumerate(pdf.pages):
                     # First try to extract structured tables
                     page_tables = page.extract_tables()
+                    structured_tables_found = False
+                    
                     if page_tables:
                         for table_num, table in enumerate(page_tables):
-                            if table and len(table) > 1:  # Ensure table has data
+                            if table:  # Table exists
                                 # Clean the table data
                                 cleaned_table = []
                                 for row in table:
                                     if row:  # Skip empty rows
+                                        # Check if row has any non-empty content
                                         cleaned_row = [cell.strip() if cell else '' for cell in row]
-                                        cleaned_table.append(cleaned_row)
+                                        if any(cell for cell in cleaned_row):  # Row has content
+                                            cleaned_table.append(cleaned_row)
                                 
-                                if cleaned_table:
+                                # Only add if we have at least header + 1 data row
+                                if len(cleaned_table) > 1:
+                                    structured_tables_found = True
                                     tables.append({
                                         'page': page_num + 1,
                                         'table': table_num + 1,
                                         'data': cleaned_table
                                     })
                     
-                    # If no structured tables found, try to extract text and parse it
-                    if not page_tables:
-                        text = page.extract_text()
-                        if text:
+                    # Always try text extraction as fallback/complement
+                    # This ensures we capture data even if tables aren't perfectly structured
+                    text = page.extract_text()
+                    if text:
+                        # Use text parsing if no structured tables found, or if structured tables seem incomplete
+                        if not structured_tables_found:
+                            # No structured tables found, use text extraction
                             parsed_data = self.parse_text_to_table(text)
-                            if parsed_data:
+                            if parsed_data and len(parsed_data) > 1:  # Has header + at least one row
+                                tables.append({
+                                    'page': page_num + 1,
+                                    'table': 1,
+                                    'data': parsed_data
+                                })
+                        elif structured_tables_found and len(tables) == 0:
+                            # Structured tables detected but filtered out (too small), use text as fallback
+                            parsed_data = self.parse_text_to_table(text)
+                            if parsed_data and len(parsed_data) > 1:
                                 tables.append({
                                     'page': page_num + 1,
                                     'table': 1,
@@ -200,6 +245,8 @@ class PDFConverter:
                                 })
         except Exception as e:
             print(f"Error with pdfplumber: {e}")
+            import traceback
+            traceback.print_exc()
             return None
         return tables
     
@@ -314,14 +361,27 @@ class PDFConverter:
             excel_path = os.path.join(self.output_folder, excel_filename)
             
             # Extract tables using pdfplumber first
+            print(f"Extracting tables from: {pdf_path}")
             tables = self.extract_tables_pdfplumber(pdf_path)
+            print(f"Found {len(tables) if tables else 0} tables with pdfplumber")
             
-            # If pdfplumber fails, try tabula
+            # If pdfplumber fails or returns empty, try tabula
             if not tables:
+                print("Trying tabula-py as fallback...")
                 tables = self.extract_tables_tabula(pdf_path)
+                print(f"Found {len(tables) if tables else 0} tables with tabula")
             
             if not tables:
                 return False, None, "Nenhuma tabela encontrada no PDF. Certifique-se de que o PDF contém dados tabulares."
+            
+            # Debug: print table info
+            total_rows = 0
+            for table in tables:
+                rows = len(table.get('data', []))
+                total_rows += rows
+                print(f"Table on page {table['page']}: {rows} rows")
+            
+            print(f"Total rows to export: {total_rows}")
             
             # Create Excel file
             self.create_excel_file(tables, excel_path)
@@ -329,5 +389,8 @@ class PDFConverter:
             return True, excel_path, None
             
         except Exception as e:
-            return False, None, f"Erro ao converter PDF: {str(e)}"
+            import traceback
+            error_msg = f"Erro ao converter PDF: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return False, None, error_msg
 
