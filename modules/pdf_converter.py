@@ -195,49 +195,86 @@ class PDFConverter:
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 for page_num, page in enumerate(pdf.pages):
-                    # First try to extract structured tables
-                    page_tables = page.extract_tables()
+                    # Try multiple extraction strategies
+                    # Strategy 1: Extract structured tables with explicit boundaries
+                    page_tables = page.extract_tables(table_settings={
+                        "vertical_strategy": "lines",
+                        "horizontal_strategy": "lines",
+                        "explicit_vertical_lines": [],
+                        "explicit_horizontal_lines": [],
+                        "snap_tolerance": 3,
+                        "join_tolerance": 3,
+                        "edge_tolerance": 3,
+                        "text_tolerance": 3,
+                        "text_x_tolerance": 3,
+                        "text_y_tolerance": 3,
+                        "intersection_tolerance": 3,
+                        "intersection_x_tolerance": 3,
+                        "intersection_y_tolerance": 3,
+                    })
+                    
+                    # If no tables found with explicit settings, try default
+                    if not page_tables:
+                        page_tables = page.extract_tables()
+                    
+                    # If still no tables, try with minimal settings
+                    if not page_tables:
+                        page_tables = page.extract_tables(table_settings={
+                            "vertical_strategy": "text",
+                            "horizontal_strategy": "text",
+                        })
+                    
                     structured_tables_found = False
                     
                     if page_tables:
+                        print(f"Page {page_num + 1}: Found {len(page_tables)} structured tables")
                         for table_num, table in enumerate(page_tables):
-                            if table:  # Table exists
+                            if table and len(table) > 0:  # Table exists and has rows
                                 # Clean the table data
                                 cleaned_table = []
-                                for row in table:
-                                    if row:  # Skip empty rows
-                                        # Check if row has any non-empty content
-                                        cleaned_row = [cell.strip() if cell else '' for cell in row]
-                                        if any(cell for cell in cleaned_row):  # Row has content
-                                            cleaned_table.append(cleaned_row)
+                                max_cols = 0
                                 
-                                # Only add if we have at least header + 1 data row
-                                if len(cleaned_table) > 1:
+                                for row in table:
+                                    if row:  # Row exists
+                                        # Clean and check for content
+                                        cleaned_row = []
+                                        for cell in row:
+                                            if cell:
+                                                cleaned_cell = str(cell).strip()
+                                                cleaned_row.append(cleaned_cell)
+                                            else:
+                                                cleaned_row.append('')
+                                        
+                                        # Check if row has any non-empty content
+                                        if any(cell for cell in cleaned_row):
+                                            cleaned_table.append(cleaned_row)
+                                            max_cols = max(max_cols, len(cleaned_row))
+                                
+                                # Normalize all rows to have the same number of columns
+                                if cleaned_table:
+                                    for i, row in enumerate(cleaned_table):
+                                        while len(row) < max_cols:
+                                            row.append('')
+                                        cleaned_table[i] = row
+                                
+                                # Add table if it has at least one row
+                                if len(cleaned_table) > 0:
                                     structured_tables_found = True
+                                    print(f"  Table {table_num + 1}: {len(cleaned_table)} rows, {max_cols} columns")
                                     tables.append({
                                         'page': page_num + 1,
                                         'table': table_num + 1,
                                         'data': cleaned_table
                                     })
                     
-                    # Always try text extraction as fallback/complement
-                    # This ensures we capture data even if tables aren't perfectly structured
-                    text = page.extract_text()
-                    if text:
-                        # Use text parsing if no structured tables found, or if structured tables seem incomplete
-                        if not structured_tables_found:
-                            # No structured tables found, use text extraction
-                            parsed_data = self.parse_text_to_table(text)
-                            if parsed_data and len(parsed_data) > 1:  # Has header + at least one row
-                                tables.append({
-                                    'page': page_num + 1,
-                                    'table': 1,
-                                    'data': parsed_data
-                                })
-                        elif structured_tables_found and len(tables) == 0:
-                            # Structured tables detected but filtered out (too small), use text as fallback
+                    # If no structured tables found, try text extraction as fallback
+                    if not structured_tables_found:
+                        text = page.extract_text()
+                        if text:
+                            print(f"Page {page_num + 1}: No structured tables, trying text extraction")
                             parsed_data = self.parse_text_to_table(text)
                             if parsed_data and len(parsed_data) > 1:
+                                print(f"  Text extraction: {len(parsed_data)} rows")
                                 tables.append({
                                     'page': page_num + 1,
                                     'table': 1,
@@ -305,45 +342,84 @@ class PDFConverter:
             page_num = table_info['page']
             table_num = table_info['table']
             
+            if not table_data or len(table_data) == 0:
+                print(f"Skipping empty table on page {page_num}, table {table_num}")
+                continue
+            
             # Create sheet name
             if len(tables) == 1:
                 sheet_name = f"Page_{page_num}"
             else:
                 sheet_name = f"Page_{page_num}_Table_{table_num}"
             
-            # Ensure sheet name is valid (max 31 chars)
+            # Ensure sheet name is valid (max 31 chars, no invalid chars)
             sheet_name = sheet_name[:31]
+            sheet_name = sheet_name.replace('/', '_').replace('\\', '_').replace('?', '_').replace('*', '_').replace('[', '_').replace(']', '_').replace(':', '_')
+            
+            # If sheet name already exists, append number
+            original_name = sheet_name
+            counter = 1
+            while sheet_name in [ws.title for ws in wb.worksheets]:
+                sheet_name = f"{original_name}_{counter}"[:31]
+                counter += 1
             
             ws = wb.create_sheet(title=sheet_name)
+            
+            print(f"Creating sheet '{sheet_name}' with {len(table_data)} rows")
             
             # Add data to worksheet
             for row_idx, row in enumerate(table_data, 1):
                 for col_idx, cell_value in enumerate(row, 1):
-                    ws.cell(row=row_idx, column=col_idx, value=cell_value)
+                    # Handle None values
+                    if cell_value is None:
+                        cell_value = ''
+                    
+                    # Convert to string and clean
+                    cell_value = str(cell_value).strip() if cell_value else ''
+                    
+                    try:
+                        ws.cell(row=row_idx, column=col_idx, value=cell_value)
+                    except Exception as e:
+                        print(f"Error writing cell ({row_idx}, {col_idx}): {e}")
+                        ws.cell(row=row_idx, column=col_idx, value='')
             
-            # Format header row
+            # Format header row (first row)
             if table_data:
                 header_row = 1
-                for col_idx in range(1, len(table_data[0]) + 1):
+                max_cols = max(len(row) for row in table_data) if table_data else 0
+                
+                for col_idx in range(1, max_cols + 1):
                     cell = ws.cell(row=header_row, column=col_idx)
                     cell.font = Font(bold=True)
                     cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
-                    cell.alignment = Alignment(horizontal="center")
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
             
             # Auto-adjust column widths
-            for column in ws.columns:
+            max_cols = max(len(row) for row in table_data) if table_data else 0
+            for col_idx in range(1, max_cols + 1):
                 max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
+                column_letter = ws.cell(row=1, column=col_idx).column_letter
+                
+                for row_idx in range(1, len(table_data) + 1):
                     try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        if cell.value:
+                            cell_length = len(str(cell.value))
+                            if cell_length > max_length:
+                                max_length = cell_length
                     except:
                         pass
-                adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
+                
+                # Set width with reasonable limits
+                adjusted_width = min(max(max_length + 2, 10), 50)  # Min 10, Max 50
                 ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Freeze header row
+            ws.freeze_panes = 'A2'
         
+        # Save Excel file
         wb.save(output_path)
+        print(f"Excel file saved: {output_path}")
     
     def convert_pdf_to_excel(self, pdf_path):
         """
